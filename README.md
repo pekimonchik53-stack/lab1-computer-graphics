@@ -1,93 +1,66 @@
-# Как запустить лабу
+# 🌋 Vulkan Starter App
 
-Тут инструкция, как собрать и запустить мою лабу на винде.
-Всё делается через **Developer Command Prompt for VS 2022**
+## Getting started
 
----
+You need C++ compiler, Vulkan SDK and CMake installed before you can build this project.
 
-## Что должно быть установлено
+This project uses C++20 standard and thus requires either of those compilers:
+- GCC 10.X
+- Clang 10
+- Microsoft Visual Studio 2019
 
-На компе должен быть:
+This is officially tested on *Windows* and *GNU/Linux platforms*, no *macOS* support yet.
+If you have a working macOS solution of this code, consider submitting a PR so others
+can build this example code without a hassle!
 
-1. **Visual Studio 2022 Community** с компонентом «Разработка классических приложений на C++».
+<ins>**1. Downloading the repository**</ins>
 
-2. **CMake**.
+Start by cloning the repository with `git clone --depth 1 https://github.com/vladeemerr/vulkan-starter-app`
 
-3. **Vulkan SDK**.
+This repository does not contain any submodules, it utilizes CMake's `FetchContent` feature instead.
 
-4. **Git**.
+<ins>**2. Configuring the project**</ins>
 
----
+Run either one of the CMake lines to download dependencies and configure the project:
 
-## Как собрать
-
-### 1. Открыть Developer Command Prompt for VS 2022
-
-Через Пуск найти **«Developer Command Prompt for VS 2022»**.
-Обычный cmd не подойдёт — в нём не будет компилятора `cl.exe`.
-
-### 2. Перейти в папку проекта
-```
-cd C:\путь\к\vulkan-starter-app
-```
-Например, у меня:
-```
-cd C:\Users\Семён\vulkan-starter-app
+```bash
+cmake --preset debug       # for GNU/Linux (GCC/Clang)
+cmake --preset msvc-debug  # for Windows (Visual Studio 2019)
+cmake --preset mingw-debug # for Windows (MinGW)
 ```
 
-### 3. Сконфигурировать проект
-```
-cmake --preset msvc-debug
-```
+If you wish to build in `release` mode, change `debug` to `release`.
 
-Первый раз займёт в районе **5–15 минут** (у меня было 12 минут) — CMake скачает зависимости (GLFW, ImGui, VMA, vk-bootstrap, glm). Всё качается с GitHub, так что нужен интернет.
+If changes are made (added/removed files), or if you want to regenerate project files, rerun the command above.
 
-Если всё прошло — в конце:
-```
--- Configuring done
--- Generating done
--- Build files have been written to: .../build-debug
-```
+<ins>**3. Building**</ins>
 
-### 4. Собрать
-```
-cmake --build build-debug --config Debug
-```
+To build the project, use the line below. You are most likely using `debug` preset, so
+the directory that will eventually contain your build files is named `build-debug`.
 
-Займёт 1–3 минуты. В конце должно быть:
-```
-vulkan-starter-app.vcxproj -> ...\build-debug\Debug\vulkan-starter-app.exe
+Likewise for `release` that directory will be named `build-release`
+
+Run one those commands, depending on which preset you chose:
+
+```bash
+cmake --build build-debug --parallel # for debug
+cmake --build build-release --parallel # for release
 ```
 
----
+### Running
 
-## Как запустить
+`build-*` directory will contain the executable in one of the subdirectories after successful build.
 
-**Важно:** запускать нужно **из корня проекта**, иначе программа не найдёт шейдеры и упадёт.
+For `msvc-{debug|release}` builds output subdirectory is set to `Debug` or `Release` respectively.
+For other configurations output subdirectory is set to `vulkan-starter-app`.
 
-Из той же папки:
-```
-.\build-debug\Debug\vulkan-starter-app.exe
-```
+**Make sure your working directory is set to the project root!**
+Project root is where this README file resides. Otherwise, the
+code responsible for loading shaders or other resources from files will fail,
+because relative paths are used.
 
-Откроется окно с икосаэдром и панель управления.
+### Compiling shaders
 
----
-
-## Что можно поделать в программе
-
-- Снять галочку **Playing** — вращение остановится.
-- Подвигать **Speed** — изменится скорость.
-- Подвигать **Trajectory radius** — фигура начнёт летать по кругу.
-- Подвигать **Position** — сдвинуть фигуру.
-- Подвигать **Rotation** — повернуть вручную.
-- Подвигать **Scale** — изменить размер.
-- Поменять **Color** — цвет умножается на цвета вершин (можно получить разные эффекты).
-- Снять галочку **Perspective** — проекция станет ортографической (фигура будет выглядеть плоско).
-
----
-
-## Автор
-
-Пекин Семён, группа М8О-305ББ-24.
-Вариант 11 — Правильный икосаэдр.
+`CMakeLists.txt` has a build recipe for compiling shader files
+along with an application. Look for a comment in this file to see
+how to compile your shaders.
