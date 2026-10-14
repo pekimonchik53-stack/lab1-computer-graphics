@@ -27,26 +27,37 @@
 Обычный cmd не подойдёт — в нём не будет компилятора `cl.exe`.
 
 ### 2. Перейти в папку проекта
+```
 cd C:\путь\к\vulkan-starter-app
-
+```
 Например, у меня:
+```
 cd C:\Users\Семён\vulkan-starter-app
+```
 
 ### 3. Сконфигурировать проект
+```
 cmake --preset msvc-debug
+```
 
 Первый раз займёт в районе **5–15 минут** (у меня было 12 минут) — CMake скачает зависимости (GLFW, ImGui, VMA, vk-bootstrap, glm). Всё качается с GitHub, так что нужен интернет.
 
 Если всё прошло — в конце:
+```
 -- Configuring done
 -- Generating done
 -- Build files have been written to: .../build-debug
+```
 
 ### 4. Собрать
+```
 cmake --build build-debug --config Debug
+```
 
 Займёт 1–3 минуты. В конце должно быть:
+```
 vulkan-starter-app.vcxproj -> ...\build-debug\Debug\vulkan-starter-app.exe
+```
 
 ---
 
@@ -55,7 +66,9 @@ vulkan-starter-app.vcxproj -> ...\build-debug\Debug\vulkan-starter-app.exe
 **Важно:** запускать нужно **из корня проекта**, иначе программа не найдёт шейдеры и упадёт.
 
 Из той же папки:
+```
 .\build-debug\Debug\vulkan-starter-app.exe
+```
 
 Откроется окно с икосаэдром и панель управления.
 
