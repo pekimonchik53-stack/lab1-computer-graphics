@@ -23,6 +23,8 @@ struct Context {
 	VkExtent2D swapchain_extent;
 
 	VkRenderPass render_pass;
+
+	VkFormat depth_buffer_format;
 };
 
 struct FrameData {
