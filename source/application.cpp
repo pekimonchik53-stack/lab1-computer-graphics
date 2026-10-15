@@ -524,7 +524,7 @@ namespace application {
                 proj = glm::perspective(glm::radians(controls.fov_degrees), aspect, 0.1f, 100.0f);
             }
             else {
-                // Ортографическая проекция: область [-3, 3] по X и Y с учётом aspect
+                // РћСЂС‚РѕРіСЂР°С„РёС‡РµСЃРєР°СЏ РїСЂРѕРµРєС†РёСЏ: РѕР±Р»Р°СЃС‚СЊ [-3, 3] РїРѕ X Рё Y СЃ СѓС‡С‘С‚РѕРј aspect
                 const float ortho_size = 3.0f;
                 proj = glm::ortho(-ortho_size * aspect, ortho_size * aspect,
                     -ortho_size, ortho_size,
