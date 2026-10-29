@@ -16,41 +16,41 @@ namespace application {
     namespace {
 
         // ============================================================
-        //  СТРУКТУРЫ ДАННЫХ
+        //  РЎРўР РЈРљРўРЈР Р« Р”РђРќРќР«РҐ
         // ============================================================
 
-        // Вершина теперь содержит нормаль вместо цвета
+        // Р’РµСЂС€РёРЅР° С‚РµРїРµСЂСЊ СЃРѕРґРµСЂР¶РёС‚ РЅРѕСЂРјР°Р»СЊ РІРјРµСЃС‚Рѕ С†РІРµС‚Р°
         struct Vertex {
             glm::vec3 position;
             glm::vec3 normal;
         };
 
-        // Матрицы и параметры освещения (передаются в шейдер)
+        // РњР°С‚СЂРёС†С‹ Рё РїР°СЂР°РјРµС‚СЂС‹ РѕСЃРІРµС‰РµРЅРёСЏ (РїРµСЂРµРґР°СЋС‚СЃСЏ РІ С€РµР№РґРµСЂ)
         struct UniformBufferObject {
             glm::mat4 model;
             glm::mat4 view;
             glm::mat4 proj;
 
             glm::vec3 cameraPos;
-            float padding1;     // <--- ВЫРАВНИВАНИЕ (чтобы следующий vec3 начался с 16-байтной границы)
+            float padding1;     // <--- Р’Р«Р РђР’РќРР’РђРќРР• (С‡С‚РѕР±С‹ СЃР»РµРґСѓСЋС‰РёР№ vec3 РЅР°С‡Р°Р»СЃСЏ СЃ 16-Р±Р°Р№С‚РЅРѕР№ РіСЂР°РЅРёС†С‹)
 
             glm::vec3 lightDir;
             float padding2;
 
             glm::vec3 lightColor;
-            float lightIntensity; // 4 байта (закрывает 16-байтный блок)
+            float lightIntensity; // 4 Р±Р°Р№С‚Р° (Р·Р°РєСЂС‹РІР°РµС‚ 16-Р±Р°Р№С‚РЅС‹Р№ Р±Р»РѕРє)
 
             glm::vec3 albedo;
             float padding3;
 
             glm::vec3 specularColor;
-            float shininess;      // 4 байта
+            float shininess;      // 4 Р±Р°Р№С‚Р°
 
             glm::vec3 ambientColor;
-            float ambientIntensity; // 4 байта
+            float ambientIntensity; // 4 Р±Р°Р№С‚Р°
         };
 
-        // Глобальные Vulkan-объекты
+        // Р“Р»РѕР±Р°Р»СЊРЅС‹Рµ Vulkan-РѕР±СЉРµРєС‚С‹
         VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout      pipeline_layout = VK_NULL_HANDLE;
         VkPipeline            graphics_pipeline = VK_NULL_HANDLE;
@@ -67,7 +67,7 @@ namespace application {
         VkDescriptorSet  descriptor_set = VK_NULL_HANDLE;
 
         // ============================================================
-        //  ГЕОМЕТРИЯ ИКОСАЭДРА (с нормалями)
+        //  Р“Р•РћРњР•РўР РРЇ РРљРћРЎРђР­Р”Р Рђ (СЃ РЅРѕСЂРјР°Р»СЏРјРё)
         // ============================================================
         constexpr float t = 1.6180339887498948482f;
 
@@ -96,21 +96,21 @@ namespace application {
         };
 
         // ============================================================
-        //  ПАРАМЕТРЫ ИНТЕРФЕЙСА
+        //  РџРђР РђРњР•РўР Р« РРќРўР•Р Р¤Р•Р™РЎРђ
         // ============================================================
         struct Controls {
-            // Камера
+            // РљР°РјРµСЂР°
             float camX = 0.0f, camY = 1.0f, camZ = 3.0f;
-            float yaw = 0.0f, pitch = 0.0f; // Поворот камеры
+            float yaw = 0.0f, pitch = 0.0f; // РџРѕРІРѕСЂРѕС‚ РєР°РјРµСЂС‹
             float fov = 60.0f;
 
-            // Свет
+            // РЎРІРµС‚
             float lightDirX = -0.5f, lightDirY = -1.0f, lightDirZ = -0.5f;
             float lightColor[3] = { 1.0f, 1.0f, 1.0f };
             float lightIntensity = 1.0f;
 
-            // Материал
-            float albedoColor[3] = { 0.8f, 0.2f, 0.2f }; // Красноватый
+            // РњР°С‚РµСЂРёР°Р»
+            float albedoColor[3] = { 0.8f, 0.2f, 0.2f }; // РљСЂР°СЃРЅРѕРІР°С‚С‹Р№
             float specularColor[3] = { 1.0f, 1.0f, 1.0f };
             float shininess = 32.0f;
 
@@ -122,7 +122,7 @@ namespace application {
         Controls controls;
 
         // ============================================================
-        //  ФУНКЦИИ СОЗДАНИЯ РЕСУРСОВ (без изменений)
+        //  Р¤РЈРќРљР¦РР РЎРћР—Р”РђРќРРЇ Р Р•РЎРЈР РЎРћР’ (Р±РµР· РёР·РјРµРЅРµРЅРёР№)
         // ============================================================
         bool createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
             VmaMemoryUsage memory_usage,
@@ -332,15 +332,15 @@ namespace application {
         }
 
         // ============================================================
-        //  ОБНОВЛЕНИЕ UNIFORM BUFFER
+        //  РћР‘РќРћР’Р›Р•РќРР• UNIFORM BUFFER
         // ============================================================
         void updateUniformBuffer() {
             auto& ctx = graphics::internal::context;
             const float aspect = static_cast<float>(ctx.swapchain_extent.width) / static_cast<float>(ctx.swapchain_extent.height);
 
-            glm::mat4 model = glm::mat4(1.0f); // Объект в центре, без вращения
+            glm::mat4 model = glm::mat4(1.0f); // РћР±СЉРµРєС‚ РІ С†РµРЅС‚СЂРµ, Р±РµР· РІСЂР°С‰РµРЅРёСЏ
 
-            // Камера смотрит в центр из позиции controls.camX/Y/Z
+            // РљР°РјРµСЂР° СЃРјРѕС‚СЂРёС‚ РІ С†РµРЅС‚СЂ РёР· РїРѕР·РёС†РёРё controls.camX/Y/Z
             glm::vec3 camPos(controls.camX, controls.camY, controls.camZ);
             glm::vec3 target(0.0f, 0.0f, 0.0f);
             glm::mat4 view = glm::lookAt(camPos, target, glm::vec3(0.0f, 1.0f, 0.0f));
@@ -372,7 +372,7 @@ namespace application {
     } // namespace
 
     // ============================================================
-    //  ПУБЛИЧНЫЕ ФУНКЦИИ
+    //  РџРЈР‘Р›РР§РќР«Р• Р¤РЈРќРљР¦РР
     // ============================================================
     bool initialize() {
         if (!createVertexBuffer()) return false;
@@ -446,7 +446,7 @@ namespace application {
         vkBeginCommandBuffer(fd.command_buffer, &begin_info);
 
         const VkClearValue clear_values[] = {
-            {.color = {.float32 = { 0.05f, 0.05f, 0.05f, 1.0f } } }, // Темный фон
+            {.color = {.float32 = { 0.05f, 0.05f, 0.05f, 1.0f } } }, // РўРµРјРЅС‹Р№ С„РѕРЅ
             {.depthStencil = {.depth = 1.0f, .stencil = 0 } },
         };
         const VkRenderPassBeginInfo render_pass_begin = {
