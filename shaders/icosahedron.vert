@@ -8,16 +8,20 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     vec3 cameraPos; vec3 lightDir; vec3 lightColor; float lightIntensity;
     vec3 albedo; vec3 specularColor; float shininess;
     vec3 ambientColor; float ambientIntensity;
+    mat4 lightViewProj;
 } ubo;
 
 layout(location = 0) out vec3 fragPos;
 layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec2 fragUV; // Передаем UV дальше
 
+layout(location = 3) out vec4 fragLightPos;
+
 void main() {
     vec4 worldPos = ubo.model * vec4(in_position, 1.0);
     fragPos = worldPos.xyz;
     fragNormal = mat3(ubo.model) * in_normal;
     fragUV = in_uv;
+    fragLightPos = ubo.lightViewProj * worldPos;
     gl_Position = ubo.proj * ubo.view * worldPos;
 }

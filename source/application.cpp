@@ -3,6 +3,8 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+
 #include <cstddef>
 #include <cmath>
 #include <cstring>
@@ -31,11 +33,13 @@ namespace application {
             glm::vec3 albedo; float padding3;
             glm::vec3 specularColor; float shininess;
             glm::vec3 ambientColor; float ambientIntensity;
+            glm::mat4 lightViewProj;
         };
 
         VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout      pipeline_layout = VK_NULL_HANDLE;
         VkPipeline            graphics_pipeline = VK_NULL_HANDLE;
+        VkPipeline            shadow_pipeline = VK_NULL_HANDLE;
         VkCommandPool         command_pool = VK_NULL_HANDLE;
 
         VkBuffer vertex_buffer = VK_NULL_HANDLE; VmaAllocation vertex_buffer_allocation = VK_NULL_HANDLE;
@@ -49,6 +53,14 @@ namespace application {
         VkImage texture_image = VK_NULL_HANDLE; VmaAllocation texture_allocation = VK_NULL_HANDLE;
         VkImageView texture_image_view = VK_NULL_HANDLE;
         VkSampler texture_sampler = VK_NULL_HANDLE;
+
+        constexpr uint32_t shadow_resolution = 2048;
+        VkImage shadow_image = VK_NULL_HANDLE;
+        VmaAllocation shadow_allocation = VK_NULL_HANDLE;
+        VkImageView shadow_image_view = VK_NULL_HANDLE;
+        VkSampler shadow_sampler = VK_NULL_HANDLE;
+        VkFormat shadow_format = VK_FORMAT_UNDEFINED;
+        bool shadow_initialized = false;
 
         constexpr float t = 1.6180339887498948482f;
 
@@ -65,6 +77,11 @@ namespace application {
             {{ t,  0,  1}, glm::normalize(glm::vec3(t,  0,  1)), {1.0f, 0.0f}},
             {{-t,  0, -1}, glm::normalize(glm::vec3(-t,  0, -1)), {0.0f, 1.0f}},
             {{-t,  0,  1}, glm::normalize(glm::vec3(-t,  0,  1)), {1.0f, 1.0f}},
+            // The ground is part of the same scene and casts/receives shadows.
+            {{-5.0f, -1.85f, -5.0f}, {0, 1, 0}, {0, 0}},
+            {{-5.0f, -1.85f,  5.0f}, {0, 1, 0}, {5, 0}},
+            {{ 5.0f, -1.85f,  5.0f}, {0, 1, 0}, {5, 5}},
+            {{ 5.0f, -1.85f, -5.0f}, {0, 1, 0}, {0, 5}},
         };
 
         std::vector<uint32_t> icosahedron_indices = {
@@ -72,10 +89,11 @@ namespace application {
              1,  5,  9,   5, 11,  4,  11, 10,  2,  10,  7,  6,   7,  1,  8,
              3,  9,  4,   3,  4,  2,   3,  2,  6,   3,  6,  8,   3,  8,  9,
              4,  9,  5,   2,  4, 11,   6,  2, 10,   8,  6,  7,   9,  8,  1,
+             12, 13, 14, 12, 14, 15, // floor
         };
 
         struct Controls {
-            float camX = 0.0f, camY = 1.0f, camZ = 3.0f;
+            float camX = 3.0f, camY = 2.5f, camZ = 6.5f;
             float fov = 60.0f;
             float lightDirX = -0.5f, lightDirY = -1.0f, lightDirZ = -0.5f;
             float lightColor[3] = { 1.0f, 1.0f, 1.0f };
@@ -84,7 +102,9 @@ namespace application {
             float specularColor[3] = { 1.0f, 1.0f, 1.0f };
             float shininess = 32.0f;
             float ambientColor[3] = { 1.0f, 1.0f, 1.0f };
-            float ambientIntensity = 0.1f;
+            float ambientIntensity = 0.2f;
+            float shadowArea = 6.0f;
+            float depthBias = 1.25f;
         };
         Controls controls;
 
@@ -246,6 +266,73 @@ namespace application {
             return true;
         }
 
+        bool createShadowMap() {
+            auto& ctx = graphics::internal::context;
+            for (VkFormat format : { VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM }) {
+                VkFormatProperties properties = {};
+                vkGetPhysicalDeviceFormatProperties(ctx.physical_device, format, &properties);
+                const auto required = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+                if ((properties.optimalTilingFeatures & required) == required) {
+                    shadow_format = format;
+                    break;
+                }
+            }
+            if (shadow_format == VK_FORMAT_UNDEFINED) {
+                std::cerr << "No suitable shadow depth format on this GPU\n";
+                return false;
+            }
+
+            VkImageCreateInfo imageInfo = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = shadow_format,
+                .extent = {shadow_resolution, shadow_resolution, 1},
+                .mipLevels = 1, .arrayLayers = 1,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            };
+            VmaAllocationCreateInfo allocationInfo = { .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE };
+            if (vmaCreateImage(ctx.allocator, &imageInfo, &allocationInfo, &shadow_image, &shadow_allocation, nullptr) != VK_SUCCESS) return false;
+
+            VkImageViewCreateInfo viewInfo = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image = shadow_image, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = shadow_format,
+                .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1 },
+            };
+            if (vkCreateImageView(ctx.device, &viewInfo, nullptr, &shadow_image_view) != VK_SUCCESS) return false;
+
+            VkSamplerCreateInfo samplerInfo = {
+                .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+                .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+                .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+                .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+                .compareEnable = VK_TRUE, .compareOp = VK_COMPARE_OP_LESS,
+                .minLod = 0.0f, .maxLod = 0.0f,
+                .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+            };
+            return vkCreateSampler(ctx.device, &samplerInfo, nullptr, &shadow_sampler) == VK_SUCCESS;
+        }
+
+        void transitionShadowImage(VkCommandBuffer commandBuffer, VkImageLayout oldLayout, VkImageLayout newLayout,
+                                   VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage,
+                                   VkAccessFlags srcAccess, VkAccessFlags dstAccess) {
+            VkImageMemoryBarrier barrier = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .srcAccessMask = srcAccess, .dstAccessMask = dstAccess,
+                .oldLayout = oldLayout, .newLayout = newLayout,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = shadow_image,
+                .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1 },
+            };
+            vkCmdPipelineBarrier(commandBuffer, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        }
+
         bool createUniformBuffer() {
             const VkDeviceSize size = sizeof(UniformBufferObject);
             VkBufferCreateInfo bufInfo = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size, .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE };
@@ -256,17 +343,18 @@ namespace application {
         }
 
         bool createDescriptorSetLayout() {
-            VkDescriptorSetLayoutBinding bindings[2] = {};
+            VkDescriptorSetLayoutBinding bindings[3] = {};
             bindings[0].binding = 0; bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; bindings[0].descriptorCount = 1; bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
             bindings[1].binding = 1; bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[1].descriptorCount = 1; bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings[2].binding = 2; bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[2].descriptorCount = 1; bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-            VkDescriptorSetLayoutCreateInfo layoutInfo = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = bindings };
+            VkDescriptorSetLayoutCreateInfo layoutInfo = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 3, .pBindings = bindings };
             if (vkCreateDescriptorSetLayout(graphics::internal::context.device, &layoutInfo, nullptr, &descriptor_set_layout) != VK_SUCCESS) return false;
             return true;
         }
 
         bool createDescriptorSet() {
-            VkDescriptorPoolSize poolSizes[2] = { { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 } };
+            VkDescriptorPoolSize poolSizes[2] = { { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 } };
             VkDescriptorPoolCreateInfo poolInfo = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 2, .pPoolSizes = poolSizes };
             if (vkCreateDescriptorPool(graphics::internal::context.device, &poolInfo, nullptr, &descriptor_pool) != VK_SUCCESS) return false;
 
@@ -275,12 +363,14 @@ namespace application {
 
             VkDescriptorBufferInfo bufferInfo = { uniform_buffer, 0, sizeof(UniformBufferObject) };
             VkDescriptorImageInfo imageInfo = { texture_sampler, texture_image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo shadowInfo = { shadow_sampler, shadow_image_view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
 
-            VkWriteDescriptorSet writes[2] = {};
+            VkWriteDescriptorSet writes[3] = {};
             writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[0].dstSet = descriptor_set; writes[0].dstBinding = 0; writes[0].descriptorCount = 1; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[0].pBufferInfo = &bufferInfo;
             writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[1].dstSet = descriptor_set; writes[1].dstBinding = 1; writes[1].descriptorCount = 1; writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[1].pImageInfo = &imageInfo;
+            writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[2].dstSet = descriptor_set; writes[2].dstBinding = 2; writes[2].descriptorCount = 1; writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[2].pImageInfo = &shadowInfo;
 
-            vkUpdateDescriptorSets(graphics::internal::context.device, 2, writes, 0, nullptr);
+            vkUpdateDescriptorSets(graphics::internal::context.device, 3, writes, 0, nullptr);
             return true;
         }
 
@@ -301,6 +391,12 @@ namespace application {
             auto vert_code = readShaderFile("shaders/icosahedron.vert.spv");
             auto frag_code = readShaderFile("shaders/icosahedron.frag.spv");
             VkShaderModule vert = createShaderModule(vert_code); VkShaderModule frag = createShaderModule(frag_code);
+            if (vert == VK_NULL_HANDLE || frag == VK_NULL_HANDLE) {
+                std::cerr << "Missing or invalid compiled shader (icosahedron.vert/frag.spv)\n";
+                if (vert) vkDestroyShaderModule(graphics::internal::context.device, vert, nullptr);
+                if (frag) vkDestroyShaderModule(graphics::internal::context.device, frag, nullptr);
+                return false;
+            }
 
             VkPipelineShaderStageCreateInfo stages[] = {
                 {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vert, .pName = "main" },
@@ -317,7 +413,7 @@ namespace application {
 
             VkPipelineInputAssemblyStateCreateInfo inputAssembly = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST };
             VkPipelineViewportStateCreateInfo viewportState = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1 };
-            VkPipelineRasterizationStateCreateInfo raster = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_BACK_BIT, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f };
+            VkPipelineRasterizationStateCreateInfo raster = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f };
             VkPipelineMultisampleStateCreateInfo multisample = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
             VkPipelineDepthStencilStateCreateInfo depth = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, .depthTestEnable = VK_TRUE, .depthWriteEnable = VK_TRUE, .depthCompareOp = VK_COMPARE_OP_LESS };
             VkPipelineColorBlendAttachmentState blendAttach = { .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT };
@@ -337,6 +433,51 @@ namespace application {
             return true;
         }
 
+        bool createShadowPipeline() {
+            auto& ctx = graphics::internal::context;
+            VkShaderModule vert = createShaderModule(readShaderFile("shaders/shadow.vert.spv"));
+            if (vert == VK_NULL_HANDLE) return false;
+            VkPipelineShaderStageCreateInfo stage = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vert, .pName = "main"
+            };
+            VkVertexInputBindingDescription binding = { .binding = 0, .stride = sizeof(Vertex), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+            VkVertexInputAttributeDescription attr = { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(Vertex, position) };
+            VkPipelineVertexInputStateCreateInfo vertexInput = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &binding,
+                .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &attr
+            };
+            VkPipelineInputAssemblyStateCreateInfo inputAssembly = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST };
+            VkPipelineViewportStateCreateInfo viewport = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1 };
+            VkPipelineRasterizationStateCreateInfo raster = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
+                .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .depthBiasEnable = VK_TRUE, .lineWidth = 1.0f
+            };
+            VkPipelineMultisampleStateCreateInfo multisample = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
+            VkPipelineDepthStencilStateCreateInfo depth = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                .depthTestEnable = VK_TRUE, .depthWriteEnable = VK_TRUE, .depthCompareOp = VK_COMPARE_OP_LESS
+            };
+            VkPipelineColorBlendStateCreateInfo blend = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+            VkDynamicState states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS };
+            VkPipelineDynamicStateCreateInfo dynamic = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 3, .pDynamicStates = states };
+            VkPipelineRenderingCreateInfo rendering = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .depthAttachmentFormat = shadow_format };
+            VkGraphicsPipelineCreateInfo pipelineInfo = {
+                .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &rendering,
+                .stageCount = 1, .pStages = &stage,
+                .pVertexInputState = &vertexInput, .pInputAssemblyState = &inputAssembly,
+                .pViewportState = &viewport, .pRasterizationState = &raster,
+                .pMultisampleState = &multisample, .pDepthStencilState = &depth,
+                .pColorBlendState = &blend, .pDynamicState = &dynamic,
+                .layout = pipeline_layout, .renderPass = VK_NULL_HANDLE
+            };
+            VkResult result = vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &shadow_pipeline);
+            vkDestroyShaderModule(ctx.device, vert, nullptr);
+            return result == VK_SUCCESS;
+        }
+
         void updateUniformBuffer() {
             auto& ctx = graphics::internal::context;
             float aspect = (float)ctx.swapchain_extent.width / (float)ctx.swapchain_extent.height;
@@ -353,7 +494,18 @@ namespace application {
             ubo.albedo = glm::vec3(controls.albedoColor[0], controls.albedoColor[1], controls.albedoColor[2]);
             ubo.specularColor = glm::vec3(controls.specularColor[0], controls.specularColor[1], controls.specularColor[2]); ubo.shininess = controls.shininess;
             ubo.ambientColor = glm::vec3(controls.ambientColor[0], controls.ambientColor[1], controls.ambientColor[2]); ubo.ambientIntensity = controls.ambientIntensity;
+
+            // Light is directional: LookAt + an orthographic projection (Vulkan depth: 0..1).
+            glm::vec3 lightDir = ubo.lightDir;
+            glm::vec3 up = std::abs(glm::dot(lightDir, glm::vec3(0, 1, 0))) > 0.99f
+                         ? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0);
+            glm::mat4 lightView = glm::lookAt(-lightDir * 12.0f, glm::vec3(0), up);
+            glm::mat4 lightProj = glm::ortho(-controls.shadowArea, controls.shadowArea,
+                                             -controls.shadowArea, controls.shadowArea, 0.1f, 35.0f);
+            lightProj[1][1] *= -1.0f;
+            ubo.lightViewProj = lightProj * lightView;
             std::memcpy(uniform_buffer_mapped, &ubo, sizeof(ubo));
+            vmaFlushAllocation(ctx.allocator, uniform_buffer_allocation, 0, sizeof(ubo));
         }
 
     } // namespace
@@ -364,18 +516,24 @@ namespace application {
         vkCreateCommandPool(ctx.device, &poolInfo, nullptr, &command_pool);
 
         if (!createTexture()) return false;
+        if (!createShadowMap()) return false;
         if (!createVertexBuffer()) return false;
         if (!createIndexBuffer()) return false;
         if (!createUniformBuffer()) return false;
         if (!createDescriptorSetLayout()) return false;
         if (!createDescriptorSet()) return false;
         if (!createGraphicsPipeline()) return false;
+        if (!createShadowPipeline()) return false;
         return true;
     }
 
     void shutdown() {
         auto& ctx = graphics::internal::context;
         vkQueueWaitIdle(ctx.graphics_queue);
+        if (shadow_pipeline) vkDestroyPipeline(ctx.device, shadow_pipeline, nullptr);
+        if (shadow_sampler) vkDestroySampler(ctx.device, shadow_sampler, nullptr);
+        if (shadow_image_view) vkDestroyImageView(ctx.device, shadow_image_view, nullptr);
+        if (shadow_image) vmaDestroyImage(ctx.allocator, shadow_image, shadow_allocation);
         vkDestroySampler(ctx.device, texture_sampler, nullptr);
         vkDestroyImageView(ctx.device, texture_image_view, nullptr);
         vmaDestroyImage(ctx.allocator, texture_image, texture_allocation);
@@ -391,13 +549,20 @@ namespace application {
     }
 
     void update(double time) {
-        ImGui::Begin("Texture Controls");
+        ImGui::Begin("Lab 4 - Icosahedron Shadow Mapping");
         ImGui::SliderFloat("Cam X", &controls.camX, -5, 5); ImGui::SliderFloat("Cam Y", &controls.camY, -5, 5); ImGui::SliderFloat("Cam Z", &controls.camZ, -5, 5); ImGui::SliderFloat("FOV", &controls.fov, 30, 120);
         ImGui::Separator();
         ImGui::ColorEdit3("Albedo (Tint)", controls.albedoColor);
         ImGui::SliderFloat("Light Intensity", &controls.lightIntensity, 0, 2);
         ImGui::ColorEdit3("Light Color", controls.lightColor);
         ImGui::SliderFloat("Ambient", &controls.ambientIntensity, 0, 1);
+        ImGui::Separator();
+        ImGui::Text("Sun / shadow map (Vulkan 1.3)");
+        ImGui::SliderFloat("Sun X", &controls.lightDirX, -1.0f, 1.0f);
+        ImGui::SliderFloat("Sun Y", &controls.lightDirY, -2.0f, -0.1f);
+        ImGui::SliderFloat("Sun Z", &controls.lightDirZ, -1.0f, 1.0f);
+        ImGui::SliderFloat("Orthographic area", &controls.shadowArea, 2.0f, 12.0f);
+        ImGui::SliderFloat("Depth bias", &controls.depthBias, 0.0f, 5.0f);
         ImGui::End();
         updateUniformBuffer();
     }
@@ -407,7 +572,50 @@ namespace application {
         vkResetCommandBuffer(fd.command_buffer, 0);
         VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         vkBeginCommandBuffer(fd.command_buffer, &beginInfo);
-        VkClearValue clearValues[] = { {.color = {.float32 = { 0.05f, 0.05f, 0.05f, 1.0f } } }, {.depthStencil = {.depth = 1.0f, .stencil = 0 } } };
+
+        // Pass 1: generate the sun depth map every frame via Dynamic Rendering.
+        transitionShadowImage(fd.command_buffer,
+                              shadow_initialized ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                              VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                              shadow_initialized ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                              VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                              shadow_initialized ? VK_ACCESS_SHADER_READ_BIT : 0,
+                              VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+
+        VkRenderingAttachmentInfo shadowAttachment = {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = shadow_image_view,
+            .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .clearValue = { .depthStencil = { .depth = 1.0f, .stencil = 0 } },
+        };
+        VkRenderingInfo shadowRendering = {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .renderArea = { .offset = {0, 0}, .extent = {shadow_resolution, shadow_resolution} },
+            .layerCount = 1, .pDepthAttachment = &shadowAttachment,
+        };
+        vkCmdBeginRendering(fd.command_buffer, &shadowRendering);
+        vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline);
+        VkViewport shadowViewport = { .x = 0, .y = 0, .width = (float)shadow_resolution, .height = (float)shadow_resolution, .minDepth = 0, .maxDepth = 1 };
+        VkRect2D shadowScissor = { .offset = {0, 0}, .extent = {shadow_resolution, shadow_resolution} };
+        vkCmdSetViewport(fd.command_buffer, 0, 1, &shadowViewport);
+        vkCmdSetScissor(fd.command_buffer, 0, 1, &shadowScissor);
+        vkCmdSetDepthBias(fd.command_buffer, controls.depthBias, 0.0f, controls.depthBias);
+        VkDeviceSize offsets[] = { 0 };
+        vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &vertex_buffer, offsets);
+        vkCmdBindIndexBuffer(fd.command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set, 0, nullptr);
+        vkCmdDrawIndexed(fd.command_buffer, (uint32_t)icosahedron_indices.size(), 1, 0, 0, 0);
+        vkCmdEndRendering(fd.command_buffer);
+        transitionShadowImage(fd.command_buffer, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                              VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                              VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+        shadow_initialized = true;
+
+        // Pass 2: the original Lab 3 render pass, now sampling the shadow map.
+        VkClearValue clearValues[] = { {.color = {.float32 = { 0.05f, 0.06f, 0.09f, 1.0f } } }, {.depthStencil = {.depth = 1.0f, .stencil = 0 } } };
         VkRenderPassBeginInfo renderPassInfo = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = ctx.render_pass, .framebuffer = fd.framebuffer, .renderArea = {.offset = {0,0}, .extent = ctx.swapchain_extent}, .clearValueCount = 2, .pClearValues = clearValues };
         vkCmdBeginRenderPass(fd.command_buffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
@@ -415,7 +623,6 @@ namespace application {
         vkCmdSetViewport(fd.command_buffer, 0, 1, &viewport);
         VkRect2D scissor = { .offset = {0,0}, .extent = ctx.swapchain_extent };
         vkCmdSetScissor(fd.command_buffer, 0, 1, &scissor);
-        VkDeviceSize offsets[] = { 0 };
         vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &vertex_buffer, offsets);
         vkCmdBindIndexBuffer(fd.command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set, 0, nullptr);
